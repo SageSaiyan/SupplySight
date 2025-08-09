@@ -5,7 +5,7 @@ import App from './App.jsx'
 import './index.css'
 import 'leaflet/dist/leaflet.css'
 import L from 'leaflet'
- 
+
 const iconBase = 'https://unpkg.com/leaflet@1.9.4/dist/images/'
 
 L.Marker.prototype.options.icon = L.icon({
