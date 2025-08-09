@@ -66,7 +66,7 @@ const ManagerDashboard = () => {
   const fetchMLSuggestions = async () => {
     setMlLoading(true)
     try {
-      await fetch('https://your-ml-service-url/health')
+      await fetch('https://supply-sight-ml.onrender.com')
       const suggestions = []
       for (const item of lowStockItems) {
         try {
