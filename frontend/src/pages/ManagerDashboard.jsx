@@ -66,6 +66,7 @@ const ManagerDashboard = () => {
   const fetchMLSuggestions = async () => {
     setMlLoading(true)
     try {
+      await fetch('https://your-ml-service-url/health')
       const suggestions = []
       for (const item of lowStockItems) {
         try {
