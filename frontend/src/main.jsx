@@ -8,6 +8,7 @@ import { AuthProvider } from './contexts/AuthContext'
 import { NotificationProvider } from './contexts/NotificationContext'
 import ErrorBoundary from './components/ErrorBoundary'
 import { Toaster } from 'react-hot-toast'
+import 'leaflet/dist/leaflet.css'
 
 // Suppress React Router future warnings
 const router = {
