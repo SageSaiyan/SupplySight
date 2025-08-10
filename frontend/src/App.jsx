@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './contexts/AuthContext'
 import Layout from './components/Layout'
@@ -14,6 +15,18 @@ import Notifications from './pages/Notifications'
 
 function App() {
   const { user, loading } = useAuth()
+
+  useEffect(() => {
+    const services = [
+      'https://supply-sight-api.onrender.com',
+      'https://supply-sight-ml.onrender.com'
+    ]
+    services.forEach(url => {
+      fetch(url)
+        .then(() => console.log(`Pinged ${url}`))
+        .catch(err => console.error(`Ping failed for ${url}`, err))
+    })
+  }, [])
 
   if (loading) {
     return (
