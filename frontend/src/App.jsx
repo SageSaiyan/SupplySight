@@ -15,7 +15,6 @@ import Notifications from './pages/Notifications'
 
 function App() {
   const { user, loading } = useAuth()
-
   useEffect(() => {
     const services = [
       'https://supply-sight-api.onrender.com',
