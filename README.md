@@ -10,6 +10,12 @@
 
 ---
 
+## 🚀 Live Demo
+
+👉 [**SupplySight on Render**](https://supply-sight.onrender.com/)
+
+---
+
 ## 🌟 Project Overview
 
 SupplySight is built to help multi-location businesses efficiently manage their inventory, sales, and order processing across different branches. It enables managers and customers to interact with inventory in real-time, backed by automated notifications, predictive analytics, and intuitive store maps.
