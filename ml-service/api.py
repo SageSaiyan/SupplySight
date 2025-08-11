@@ -6,6 +6,7 @@ import requests
 import os
 from datetime import datetime, timedelta
 import math
+from typing import Optional
 
 # ML libraries
 from sklearn.linear_model import LinearRegression
@@ -23,22 +24,27 @@ app.add_middleware(
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:5000")
 
+
 class ForecastRequest(BaseModel):
     storeId: str
     itemId: str
 
+
 class StoreForecastRequest(BaseModel):
     storeId: str
+
 
 class ForecastResponse(BaseModel):
     suggestedQty: int
     confidence: float
     reasoning: str
+    itemName: Optional[str] = None
 
-def heuristic_from_orders_for_item(orders, item_id):
+
+def heuristic_from_orders_for_item(orders, item_id, item_name: Optional[str] = None):
     """
-    Original fallback logic: compute total sold for item in orders (assumes orders list contains last 7 days).
-    Returns (suggested_qty:int, confidence:float, reasoning:str)
+    Fallback heuristic. Returns (suggested_qty:int, confidence:float, reasoning:str)
+    Now accepts optional item_name and includes it in the reasoning string when provided.
     """
     total_sold = 0
     relevant_count = 0
@@ -48,7 +54,7 @@ def heuristic_from_orders_for_item(orders, item_id):
                 qty = o_item.get("quantity", 0)
                 total_sold += qty
                 relevant_count += 1
-                break  # count order once as original code did
+                break  # count order once
 
     days = 7
     average_daily_sales = total_sold / days if days > 0 else 0
@@ -56,9 +62,17 @@ def heuristic_from_orders_for_item(orders, item_id):
     suggested_qty = max(suggested_qty, 5)
 
     confidence = min(0.9, 0.3 + (relevant_count * 0.1)) if relevant_count else 0.3
-    reasoning = f"Fallback heuristic: Based on {total_sold} units sold in the last 7 days ({average_daily_sales:.1f}/day)."
+
+    if item_name:
+        reasoning = (
+            f"Fallback heuristic for {item_name}: "
+            f"Based on {total_sold} units sold in the last 7 days ({average_daily_sales:.1f}/day)."
+        )
+    else:
+        reasoning = f"Fallback heuristic: Based on {total_sold} units sold in the last 7 days ({average_daily_sales:.1f}/day)."
 
     return suggested_qty, confidence, reasoning
+
 
 @app.get("/health")
 async def health_check():
@@ -68,15 +82,17 @@ async def health_check():
         "service": "Fast-Commerce ML Service"
     }
 
+
 @app.post("/forecast", response_model=ForecastResponse)
 async def forecast_item(request: ForecastRequest):
     """
     ML-backed forecast for a single item with safe fallback to original heuristic.
+    Returns an optional itemName field and ensures fallback reasoning mentions the item name when possible.
     """
     try:
         seven_days_ago = datetime.now() - timedelta(days=7)
 
-        # fetch orders (same as original)
+        # fetch orders
         try:
             orders_response = requests.get(
                 f"{BACKEND_URL}/api/orders/ml/public",
@@ -94,9 +110,23 @@ async def forecast_item(request: ForecastRequest):
         orders_data = orders_response.json()
         orders = orders_data.get("orders", [])
 
+        # Try to fetch item name from store items endpoint (if available)
+        item_name = None
+        try:
+            items_response = requests.get(f"{BACKEND_URL}/api/items/store/{request.storeId}", timeout=10)
+            if items_response.status_code == 200:
+                items_list = items_response.json().get("items", [])
+                item_name = next((it.get("name") for it in items_list if it.get("_id") == request.itemId), None)
+        except Exception:
+            # Not critical — fail silently and proceed without item name
+            item_name = None
+
         if not orders:
-            # no orders at all -> fallback to default min
-            return ForecastResponse(suggestedQty=5, confidence=0.3, reasoning="No order data available, default suggestion.")
+            # no orders at all -> fallback to default min (mention item name if we have it)
+            reasoning = "No order data available, default suggestion."
+            if item_name:
+                reasoning = f"{item_name}: {reasoning}"
+            return ForecastResponse(suggestedQty=5, confidence=0.3, reasoning=reasoning, itemName=item_name)
 
         # Build rows for this item from orders
         rows = []
@@ -109,10 +139,10 @@ async def forecast_item(request: ForecastRequest):
                         "price": item.get("item", {}).get("price", 0)
                     })
 
-        # If no item-specific rows -> fallback heuristic
+        # If no item-specific rows -> fallback heuristic (pass item_name)
         if not rows:
-            suggested_qty, confidence, reasoning = heuristic_from_orders_for_item(orders, request.itemId)
-            return ForecastResponse(suggestedQty=suggested_qty, confidence=confidence, reasoning=reasoning)
+            suggested_qty, confidence, reasoning = heuristic_from_orders_for_item(orders, request.itemId, item_name)
+            return ForecastResponse(suggestedQty=suggested_qty, confidence=confidence, reasoning=reasoning, itemName=item_name)
 
         # Build DataFrame safely
         try:
@@ -127,13 +157,13 @@ async def forecast_item(request: ForecastRequest):
         except Exception as e:
             print(f"Pandas parsing failed: {e}")
             # fallback to heuristic
-            suggested_qty, confidence, reasoning = heuristic_from_orders_for_item(orders, request.itemId)
-            return ForecastResponse(suggestedQty=suggested_qty, confidence=confidence, reasoning=reasoning)
+            suggested_qty, confidence, reasoning = heuristic_from_orders_for_item(orders, request.itemId, item_name)
+            return ForecastResponse(suggestedQty=suggested_qty, confidence=confidence, reasoning=reasoning, itemName=item_name)
 
         # If insufficient rows for ML (e.g., <2), fallback
         if len(df) < 2:
-            suggested_qty, confidence, reasoning = heuristic_from_orders_for_item(orders, request.itemId)
-            return ForecastResponse(suggestedQty=suggested_qty, confidence=confidence, reasoning=reasoning)
+            suggested_qty, confidence, reasoning = heuristic_from_orders_for_item(orders, request.itemId, item_name)
+            return ForecastResponse(suggestedQty=suggested_qty, confidence=confidence, reasoning=reasoning, itemName=item_name)
 
         # Try ML training and prediction, but catch any ML error and fallback
         try:
@@ -155,14 +185,14 @@ async def forecast_item(request: ForecastRequest):
             confidence = min(0.9, 0.3 + (len(df) * 0.05))
             reasoning = f"ML-based forecast using {len(df)} sales records. Predicted avg {pred:.2f}/day with 20% buffer."
 
-            return ForecastResponse(suggestedQty=suggested_qty, confidence=confidence, reasoning=reasoning)
+            return ForecastResponse(suggestedQty=suggested_qty, confidence=confidence, reasoning=reasoning, itemName=item_name)
 
         except Exception as ml_e:
             # Log ML error and fallback to original logic
             print(f"ML failed ({ml_e}); falling back to heuristic.")
-            suggested_qty, confidence, reasoning = heuristic_from_orders_for_item(orders, request.itemId)
+            suggested_qty, confidence, reasoning = heuristic_from_orders_for_item(orders, request.itemId, item_name)
             reasoning = f"Fallback due to ML error: {str(ml_e)}. " + reasoning
-            return ForecastResponse(suggestedQty=suggested_qty, confidence=confidence, reasoning=reasoning)
+            return ForecastResponse(suggestedQty=suggested_qty, confidence=confidence, reasoning=reasoning, itemName=item_name)
 
     except HTTPException:
         raise
@@ -170,13 +200,15 @@ async def forecast_item(request: ForecastRequest):
         print(f"Unexpected error in /forecast: {e}")
         raise HTTPException(status_code=500, detail=f"Forecast calculation failed: {str(e)}")
 
+
 @app.post("/forecast/store")
 async def forecast_store_items(request: StoreForecastRequest):
     """
     ML-backed store-level forecasts with per-item fallback to original heuristic.
+    Each forecast item includes itemName already (unchanged behavior).
     """
     try:
-        # Get store items (same as original)
+        # Get store items
         try:
             items_response = requests.get(f"{BACKEND_URL}/api/items/store/{request.storeId}", timeout=20)
         except requests.RequestException as e:
@@ -211,6 +243,7 @@ async def forecast_store_items(request: StoreForecastRequest):
         for item in items:
             try:
                 item_id = item.get("_id")
+                this_item_name = item.get("name")
                 # Build rows for this item
                 rows = []
                 for order in store_orders:
@@ -222,9 +255,9 @@ async def forecast_store_items(request: StoreForecastRequest):
                                 "price": order_item.get("item", {}).get("price", 0)
                             })
 
-                # If no rows -> fallback original
+                # If no rows -> fallback original (pass item name)
                 if not rows:
-                    suggested_qty, confidence, reasoning = heuristic_from_orders_for_item(store_orders, item_id)
+                    suggested_qty, confidence, reasoning = heuristic_from_orders_for_item(store_orders, item_id, this_item_name)
                 else:
                     # Try ML
                     try:
@@ -257,12 +290,12 @@ async def forecast_store_items(request: StoreForecastRequest):
 
                     except Exception as ml_e:
                         print(f"ML failed for item {item_id}: {ml_e}; falling back.")
-                        suggested_qty, confidence, reasoning = heuristic_from_orders_for_item(store_orders, item_id)
+                        suggested_qty, confidence, reasoning = heuristic_from_orders_for_item(store_orders, item_id, this_item_name)
                         reasoning = f"Fallback due to ML error: {str(ml_e)}. " + reasoning
 
                 forecasts.append({
                     "itemId": item_id,
-                    "itemName": item.get("name"),
+                    "itemName": this_item_name,
                     "currentQty": item.get("quantity"),
                     "reorderThreshold": item.get("reorderThreshold"),
                     "suggestedQty": suggested_qty,
@@ -295,6 +328,7 @@ async def forecast_store_items(request: StoreForecastRequest):
         print(f"Unexpected error in /forecast/store: {e}")
         raise HTTPException(status_code=500, detail=f"Store forecast calculation failed: {str(e)}")
 
+
 @app.post("/test-forecast", response_model=ForecastResponse)
 async def test_forecast_item(request: ForecastRequest):
     """
@@ -310,15 +344,18 @@ async def test_forecast_item(request: ForecastRequest):
         confidence = 0.8
         reasoning = f"Test forecast: Based on {total_sold} units sold in the last 7 days ({average_daily_sales:.1f} daily average). Suggested quantity includes 20% buffer."
 
+        # Return a test itemName if you want to validate UI behavior
         return ForecastResponse(
             suggestedQty=suggested_qty,
             confidence=confidence,
-            reasoning=reasoning
+            reasoning=reasoning,
+            itemName="Test Item"
         )
 
     except Exception as e:
         print(f"Test forecast exception: {e}")
         raise HTTPException(status_code=500, detail=f"Test forecast failed: {str(e)}")
+
 
 @app.get("/")
 async def root():
